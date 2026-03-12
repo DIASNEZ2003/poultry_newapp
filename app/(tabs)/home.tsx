@@ -18,6 +18,7 @@ import {
 } from "react-native";
 import { supabase } from "../../supabaseClient";
 import { auth, db } from "../firebaseConfig";
+import { registerForPushNotificationsAsync } from "../pushNotifications"; // <-- ADDED THIS IMPORT
 
 // ── Font helpers ──────────────────────────────────────────────────────────────
 const font = (weight: any = "400") => ({
@@ -123,14 +124,7 @@ const StatBlock = ({
     }}
   >
     <Text
-      style={[
-        mono,
-        {
-          fontSize: 14,
-          letterSpacing: 0.2,
-          color: "#8C6A6A",
-        },
-      ]}
+      style={[mono, { fontSize: 14, letterSpacing: 0.2, color: "#8C6A6A" }]}
     >
       {label}
     </Text>
@@ -213,12 +207,7 @@ const ActionCard = ({
       <Text
         style={[
           mono,
-          {
-            fontSize: 14,
-            letterSpacing: 0.2,
-            color: "#8C6A6A",
-            marginTop: 4,
-          },
+          { fontSize: 14, letterSpacing: 0.2, color: "#8C6A6A", marginTop: 4 },
         ]}
         numberOfLines={1}
       >
@@ -349,9 +338,9 @@ const Home = () => {
   const [showProfileModal, setShowProfileModal] = useState(false);
   const [showLogoutModal, setShowLogoutModal] = useState(false);
 
-  // Data State
   const [rawBatches, setRawBatches] = useState<any>(null);
-  const [techAlert, setTechAlert] = useState<string | null>(null);
+  // ── NEW: store the full alert object so we can read its batchDay field
+  const [techAlertObj, setTechAlertObj] = useState<any>(null);
   const [insightsOpen, setInsightsOpen] = useState(true);
 
   const [weather, setWeather] = useState({
@@ -406,7 +395,7 @@ const Home = () => {
     },
   ];
 
-  // Fetch Current User
+  // Fetch Current User & Register for Push Notifications
   useEffect(() => {
     const user = auth.currentUser;
     if (!user) return;
@@ -421,6 +410,15 @@ const Home = () => {
         setAssignedPen(d.assignedPen || null);
       }
     });
+
+    // --- NEW PUSH NOTIFICATION CODE ---
+    registerForPushNotificationsAsync().then((token) => {
+      if (token) {
+        update(userRef, { pushToken: token });
+      }
+    });
+    // ----------------------------------
+
     return () => unsubUser();
   }, []);
 
@@ -451,12 +449,11 @@ const Home = () => {
     return () => unsubBatches();
   }, []);
 
-  // ── Listen for technician alert messages ──────────────────────
+  // ── Listen for technician alert — store full object to read batchDay ────────
   useEffect(() => {
     const user = auth.currentUser;
     if (!user) return;
 
-    // Find the technician UID from users list
     const unsubUsers = onValue(ref(db, "users"), (snap) => {
       if (!snap.exists()) return;
       const all = snap.val();
@@ -483,8 +480,8 @@ const Home = () => {
           }
         });
 
-        if (latest)
-          setTechAlert(latest.text?.replace(/^📢\s*/, "") || latest.text);
+        // Store the full object (text + batchDay)
+        setTechAlertObj(latest || null);
       });
 
       return () => unsubChat();
@@ -660,30 +657,44 @@ const Home = () => {
   // ── Smart Insights ───────────────────────────────────────────────────────────
   const actionableInsights = useMemo(() => {
     if (!batchData || !batchData.myPenStats || !assignedPen) return [];
+
+    const currentDay = (batchData as any).day as number;
     const insights: any[] = [];
     const currentHour = new Date().getHours();
     const showAMShift = currentHour >= 6;
     const showPMShift = currentHour >= 13;
 
-    // 0. Tech alert — pinned at top
-    if (techAlert) {
-      insights.push({
-        id: "tech-alert",
-        icon: "megaphone",
-        color: "#C0392B",
-        title: "Message from Technician",
-        description: techAlert,
-        isTechAlert: true,
-      });
+    // 0. Tech alert
+    if (techAlertObj) {
+      const alertTs = techAlertObj.timestamp;
+      const sentDate = alertTs ? new Date(alertTs) : null;
+      const todayDate = new Date();
+      const sentToday =
+        sentDate &&
+        sentDate.getDate() === todayDate.getDate() &&
+        sentDate.getMonth() === todayDate.getMonth() &&
+        sentDate.getFullYear() === todayDate.getFullYear();
+      if (sentToday) {
+        insights.push({
+          id: "tech-alert",
+          icon: "megaphone",
+          color: "#C0392B",
+          title: `Day ${currentDay} — Message from Technician`,
+          description:
+            techAlertObj.text?.replace(/^📢\s*/, "") || techAlertObj.text,
+          isTechAlert: true,
+        });
+      }
     }
 
+    // 1. Missing AM logs
     if (showAMShift) {
       if (!batchData.myPenStats.amMortalityLogged)
         insights.push({
           id: "am-mortality",
           icon: "skull",
           color: "#C0392B",
-          title: "Morning Mortality",
+          title: `Day ${currentDay} — Morning Mortality`,
           description: `You haven't recorded the AM mortality check for ${assignedPen}.`,
           btnText: "RECORD",
           route: "/record-mortality",
@@ -693,7 +704,7 @@ const Home = () => {
           id: "am-feeds",
           icon: "nutrition",
           color: "#D35400",
-          title: "Morning Feeds",
+          title: `Day ${currentDay} — Morning Feeds`,
           description: `You haven't recorded the AM feed usage for ${assignedPen}.`,
           btnText: "RECORD",
           route: "/RecordFeeds",
@@ -703,19 +714,21 @@ const Home = () => {
           id: "am-vitamins",
           icon: "flask",
           color: "#27AE60",
-          title: "Morning Vitamins",
+          title: `Day ${currentDay} — Morning Vitamins`,
           description: `You haven't recorded AM vitamins or water for ${assignedPen}.`,
           btnText: "RECORD",
           route: "/RecordVitamins",
         });
     }
+
+    // 2. Missing PM logs
     if (showPMShift) {
       if (!batchData.myPenStats.pmMortalityLogged)
         insights.push({
           id: "pm-mortality",
           icon: "skull",
           color: "#C0392B",
-          title: "Afternoon Mortality",
+          title: `Day ${currentDay} — Afternoon Mortality`,
           description: `You haven't recorded the PM mortality check for ${assignedPen}.`,
           btnText: "RECORD",
           route: "/record-mortality",
@@ -725,7 +738,7 @@ const Home = () => {
           id: "pm-feeds",
           icon: "nutrition",
           color: "#D35400",
-          title: "Afternoon Feeds",
+          title: `Day ${currentDay} — Afternoon Feeds`,
           description: `You haven't recorded the PM feed usage for ${assignedPen}.`,
           btnText: "RECORD",
           route: "/RecordFeeds",
@@ -735,13 +748,14 @@ const Home = () => {
           id: "pm-vitamins",
           icon: "flask",
           color: "#27AE60",
-          title: "Afternoon Vitamins",
+          title: `Day ${currentDay} — Afternoon Vitamins`,
           description: `You haven't recorded PM vitamins or water for ${assignedPen}.`,
           btnText: "RECORD",
           route: "/RecordVitamins",
         });
     }
 
+    // 3. Scheduled weighing day
     if (
       batchData.day > 0 &&
       batchData.day % 3 === 0 &&
@@ -752,7 +766,7 @@ const Home = () => {
         id: "missing-weight",
         icon: "scale",
         color: "#0E7490",
-        title: `Day ${batchData.day} Weighing`,
+        title: `Day ${currentDay} — Scheduled Weighing`,
         description:
           "Today is a scheduled weighing day. Please record the average sample weight.",
         btnText: "WEIGH",
@@ -760,6 +774,7 @@ const Home = () => {
       });
     }
 
+    // 4. High pen mortality
     const startPop =
       batchData.myPenStats.count + batchData.myPenStats.mortality;
     if (startPop > 0) {
@@ -769,11 +784,12 @@ const Home = () => {
           id: "health-mort-high",
           icon: "alert-circle",
           color: "#C0392B",
-          title: `High Pen Mortality (${mortalityRate.toFixed(1)}%)`,
+          title: `Day ${currentDay} — High Pen Mortality (${mortalityRate.toFixed(1)}%)`,
           description: `Your assigned pen has lost ${batchData.myPenStats.mortality} birds. Notify the technician immediately.`,
         });
     }
 
+    // 5. Weather
     const T = Number(weather.temp) || 0;
     const isRainy =
       weather.icon === "rainy-outline" ||
@@ -784,7 +800,7 @@ const Home = () => {
         id: "weather-danger",
         icon: "alert-circle",
         color: "#C0392B",
-        title: `${T}°C — Danger Heat Level`,
+        title: `Day ${currentDay} — ${T}°C Danger Heat Level`,
         description: `Increase water frequency immediately, add electrolytes, and maximize ventilation. Watch for panting and wing-drooping.`,
       });
     } else if (T >= 32) {
@@ -792,7 +808,7 @@ const Home = () => {
         id: "weather-warning",
         icon: "warning",
         color: "#D35400",
-        title: `${T}°C — Heat Stress Likely`,
+        title: `Day ${currentDay} — ${T}°C Heat Stress Likely`,
         description: `Add electrolytes to water now. Increase watering frequency and check pen ventilation.`,
       });
     } else if (isRainy) {
@@ -800,7 +816,7 @@ const Home = () => {
         id: "weather-rain",
         icon: "rainy",
         color: "#2471A3",
-        title: `Rain Detected — Check Pens`,
+        title: `Day ${currentDay} — Rain Detected`,
         description: `Keep an eye on litter moisture. Make sure pen roofs and drainage channels are clear to prevent ammonia buildup.`,
       });
     } else {
@@ -808,13 +824,13 @@ const Home = () => {
         id: "weather-good",
         icon: weather.icon === "sunny-outline" ? "sunny" : "partly-sunny",
         color: "#27AE60",
-        title: `${T}°C — Comfortable Conditions`,
+        title: `Day ${currentDay} — ${T}°C Comfortable Conditions`,
         description: `Conditions are ideal. Normal feeding and watering schedule is fine. Keep up the good work.`,
       });
     }
 
     return insights;
-  }, [batchData, weather, assignedPen, techAlert]);
+  }, [batchData, weather, assignedPen, techAlertObj]);
 
   const uploadProfileImage = async () => {
     try {
@@ -1064,7 +1080,7 @@ const Home = () => {
                         numberOfLines={2}
                         adjustsFontSizeToFit
                       >
-                        {batchData.name}
+                        {(batchData as any).name}
                       </Text>
                     </View>
                     <View
@@ -1095,10 +1111,10 @@ const Home = () => {
                           { fontSize: 32, lineHeight: 34, color: "#3B0A0A" },
                         ]}
                       >
-                        {batchData.day}
+                        {(batchData as any).day}
                       </Text>
                       <Text style={[mono, { fontSize: 14, color: "#7A3030" }]}>
-                        / {batchData.totalDays}
+                        / {(batchData as any).totalDays}
                       </Text>
                     </View>
                   </View>
@@ -1128,7 +1144,7 @@ const Home = () => {
                           },
                         ]}
                       >
-                        {batchData.progress}%
+                        {(batchData as any).progress}%
                       </Text>
                     </View>
                     <View
@@ -1141,7 +1157,7 @@ const Home = () => {
                       <View
                         style={{
                           height: "100%",
-                          width: `${batchData.progress}%`,
+                          width: `${(batchData as any).progress}%`,
                           backgroundColor: "#FFFFFF",
                           borderRadius: 3,
                         }}
@@ -1154,7 +1170,6 @@ const Home = () => {
               {/* ── ACTIONABLE INSIGHTS ────────────────────────────────────── */}
               {actionableInsights.length > 0 && (
                 <View style={{ marginBottom: 24 }}>
-                  {/* Collapsible header */}
                   <TouchableOpacity
                     onPress={() => setInsightsOpen((o) => !o)}
                     activeOpacity={0.7}
@@ -1167,16 +1182,11 @@ const Home = () => {
                     <Text
                       style={[
                         mono,
-                        {
-                          fontSize: 14,
-                          letterSpacing: 0.2,
-                          color: "#8C6A6A",
-                        },
+                        { fontSize: 14, letterSpacing: 0.2, color: "#8C6A6A" },
                       ]}
                     >
                       ACTIONABLE INSIGHTS
                     </Text>
-                    {/* Badge — count of urgent items */}
                     {actionableInsights.filter((i) => i.color === "#C0392B")
                       .length > 0 && (
                       <View
@@ -1222,7 +1232,6 @@ const Home = () => {
                     />
                   </TouchableOpacity>
 
-                  {/* Cards — only shown when open */}
                   {insightsOpen &&
                     actionableInsights.map((insight) => (
                       <InsightCard
@@ -1255,11 +1264,7 @@ const Home = () => {
                   <Text
                     style={[
                       mono,
-                      {
-                        fontSize: 14,
-                        letterSpacing: 0.2,
-                        color: "#8C6A6A",
-                      },
+                      { fontSize: 14, letterSpacing: 0.2, color: "#8C6A6A" },
                     ]}
                   >
                     MY PEN OVERVIEW
@@ -1351,13 +1356,13 @@ const Home = () => {
                   >
                     <StatBlock
                       label="Live Pop."
-                      value={batchData.myPenStats.count}
+                      value={(batchData as any).myPenStats.count}
                       unit="hd"
                       color="#0E7490"
                     />
                     <StatBlock
                       label="Mortality"
-                      value={batchData.myPenStats.mortality}
+                      value={(batchData as any).myPenStats.mortality}
                       unit="hd"
                       color="#C0392B"
                     />
@@ -1377,11 +1382,7 @@ const Home = () => {
                   <Text
                     style={[
                       mono,
-                      {
-                        fontSize: 14,
-                        letterSpacing: 0.2,
-                        color: "#8C6A6A",
-                      },
+                      { fontSize: 14, letterSpacing: 0.2, color: "#8C6A6A" },
                     ]}
                   >
                     MANAGEMENT TOOLS

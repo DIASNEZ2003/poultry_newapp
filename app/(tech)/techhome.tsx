@@ -28,13 +28,13 @@ import {
 } from "react-native";
 import { supabase } from "../../supabaseClient";
 import { auth, db } from "../firebaseConfig";
+import { registerForPushNotificationsAsync } from "../pushNotifications"; // <-- ADDED THIS IMPORT
 
 // ── Font helpers ──────────────────────────────────────────────────────────────
 const font = (weight: any = "400") => ({
   fontFamily: Platform.OS === "ios" ? "System" : "sans-serif",
   fontWeight: weight,
 });
-// mono now uses system font for readability
 const mono = {
   fontFamily: Platform.OS === "ios" ? "System" : "sans-serif",
 };
@@ -220,7 +220,6 @@ const InsightCard = ({
     className="bg-white border border-[#EDE0E0] rounded p-3.5 mb-2.5"
     style={{ borderLeftWidth: 3, borderLeftColor: color }}
   >
-    {/* Top row: icon + text + optional action button */}
     <View className="flex-row items-center">
       <View
         className="w-9 h-9 rounded-full items-center justify-center mr-3"
@@ -258,7 +257,6 @@ const InsightCard = ({
       )}
     </View>
 
-    {/* Notify Personnel — full-width button at bottom of alert cards */}
     {isNotifyPersonnel && onNotifyPersonnel && (
       <TouchableOpacity
         onPress={onNotifyPersonnel}
@@ -382,7 +380,6 @@ const PenCard = ({ pen }: { pen: any }) => {
 const TechHome = () => {
   const router = useRouter();
 
-  // Dashboard states
   const [firstName, setFirstName] = useState("");
   const [profileImage, setProfileImage] = useState<string | null>(null);
   const [uploading, setUploading] = useState(false);
@@ -390,7 +387,6 @@ const TechHome = () => {
   const [showLogoutModal, setShowLogoutModal] = useState(false);
   const [showAllPens, setShowAllPens] = useState(false);
 
-  // Edit Profile States
   const [showEditProfileModal, setShowEditProfileModal] = useState(false);
   const [editFirstName, setEditFirstName] = useState("");
   const [editLastName, setEditLastName] = useState("");
@@ -399,7 +395,6 @@ const TechHome = () => {
   const [rawBatches, setRawBatches] = useState<any>(null);
   const [rawUsers, setRawUsers] = useState<any>(null);
 
-  // Admin alert & notify personnel
   const [adminAlert, setAdminAlert] = useState<any>(null);
   const [notifyPersonnelSent, setNotifyPersonnelSent] = useState<
     Record<string, boolean>
@@ -443,7 +438,7 @@ const TechHome = () => {
     },
   ];
 
-  // Fetch Current User
+  // Fetch Current User & Register for Push Notifications
   useEffect(() => {
     const user = auth.currentUser;
     if (user) {
@@ -458,11 +453,20 @@ const TechHome = () => {
           setProfileImage(d.profilePicture || null);
         }
       });
+
+      // --- NEW PUSH NOTIFICATION CODE ---
+      registerForPushNotificationsAsync().then((token) => {
+        if (token) {
+          update(userRef, { pushToken: token });
+        }
+      });
+      // ----------------------------------
+
       return () => unsubUser();
     }
   }, []);
 
-  // Load User Data specifically for the Edit Form
+  // Load User Data for Edit Form
   const loadProfileForEdit = async () => {
     const user = auth.currentUser;
     if (!user) return;
@@ -479,13 +483,12 @@ const TechHome = () => {
     }
   };
 
-  // Save the Edited Profile
+  // Save Edited Profile
   const handleSaveProfile = async () => {
     if (!editFirstName.trim() || !editLastName.trim()) {
       Alert.alert("Validation", "First name and last name cannot be empty.");
       return;
     }
-
     setSavingProfile(true);
     try {
       const user = auth.currentUser;
@@ -524,7 +527,7 @@ const TechHome = () => {
     return () => unsubWeather();
   }, []);
 
-  // Listen for admin alert — shows as an insight card
+  // Listen for admin alert — pinned as insight card
   useEffect(() => {
     const user = auth.currentUser;
     if (!user) return;
@@ -546,8 +549,12 @@ const TechHome = () => {
     return () => unsubChat();
   }, []);
 
-  // Send admin alert forward to all personnel
-  const handleNotifyPersonnel = async (insightId: string, message: string) => {
+  // Send admin alert forward to all personnel — NOW stamps batchDay on the message
+  const handleNotifyPersonnel = async (
+    insightId: string,
+    message: string,
+    currentBatchDay: number,
+  ) => {
     if (!rawUsers) return;
     const user = auth.currentUser;
     if (!user) return;
@@ -569,6 +576,7 @@ const TechHome = () => {
             seen: false,
             status: "sent",
             isAlert: true,
+            batchDay: currentBatchDay,
           });
         }),
       );
@@ -586,7 +594,6 @@ const TechHome = () => {
     const unsubUsers = onValue(ref(db, "users"), (snap) =>
       setRawUsers(snap.exists() ? snap.val() : {}),
     );
-
     return () => {
       unsubBatches();
       unsubUsers();
@@ -625,7 +632,6 @@ const TechHome = () => {
         qtyHarvested = 0,
         pendingRecordsCount = 0;
 
-      // Define "Today" boundary for missing report tracking
       const startOfToday = new Date().setHours(0, 0, 0, 0);
 
       const checkPending = (logCategory: any) => {
@@ -637,7 +643,6 @@ const TechHome = () => {
         });
       };
 
-      // Utility to check if a log was submitted today
       const checkLogForToday = (log: any, updateFlagFn: Function) => {
         if (log.timestamp && log.timestamp >= startOfToday) {
           updateFlagFn(true);
@@ -655,19 +660,11 @@ const TechHome = () => {
         }
       };
 
-      if (activeBatch.mortality_logs) {
-        checkPending(activeBatch.mortality_logs);
-      }
-      if (activeBatch.feed_logs) {
-        checkPending(activeBatch.feed_logs);
-      }
+      if (activeBatch.mortality_logs) checkPending(activeBatch.mortality_logs);
+      if (activeBatch.feed_logs) checkPending(activeBatch.feed_logs);
       const vLogs = activeBatch.vitamin_logs || activeBatch.daily_vitamin_logs;
-      if (vLogs) {
-        checkPending(vLogs);
-      }
-      if (activeBatch.weight_logs) {
-        checkPending(activeBatch.weight_logs);
-      }
+      if (vLogs) checkPending(vLogs);
+      if (activeBatch.weight_logs) checkPending(activeBatch.weight_logs);
 
       if (activeBatch.sales) {
         Object.values(activeBatch.sales).forEach((sale: any) => {
@@ -763,7 +760,6 @@ const TechHome = () => {
         }
 
         let assignedCount = 0;
-
         keys.forEach((key) => {
           const p = activeBatch.pens?.[key];
           if (p && (p.assignedTo || p.assignedName || p.personnel)) {
@@ -829,14 +825,37 @@ const TechHome = () => {
     }
   }, [rawBatches, rawUsers]);
 
-  // Generate Array of Actionable Insights for the UI
+  // ── Generate Actionable Insights ──────────────────────────────────────────
   const actionableInsights = useMemo(() => {
     if (!batchData) return [];
 
+    const currentDay = (batchData as any).day as number;
     const insights: any[] = [];
 
-    // 1. Missing Daily Reports Alert
-    const missingPens = batchData.pens
+    // 0. Admin alert
+    if (adminAlert) {
+      const alertTs = adminAlert.timestamp;
+      const sentDate = alertTs ? new Date(alertTs) : null;
+      const todayDate = new Date();
+      const sentToday =
+        sentDate &&
+        sentDate.getDate() === todayDate.getDate() &&
+        sentDate.getMonth() === todayDate.getMonth() &&
+        sentDate.getFullYear() === todayDate.getFullYear();
+      if (sentToday) {
+        insights.push({
+          id: "admin-alert",
+          icon: "alert-circle",
+          color: "#C0392B",
+          title: `Day ${currentDay} — Alert from Admin`,
+          description: adminAlert.text,
+          isNotifyPersonnel: true,
+        });
+      }
+    }
+
+    // 1. Missing Daily Reports
+    const missingPens = (batchData as any).pens
       .filter((p: any) => !p.hasReportToday)
       .map((p: any) => p.id);
     if (missingPens.length > 0) {
@@ -847,40 +866,40 @@ const TechHome = () => {
       insights.push({
         id: "missing-reports",
         icon: "document-text-outline",
-        color: "#D35400", // Orange warning
-        title: "Missing Daily Reports",
+        color: "#D35400",
+        title: `Day ${currentDay} — Missing Daily Reports`,
         description: `${penText} did not send any reports today. Remind personnel to submit their logs.`,
         isNotifyPersonnel: true,
       });
     }
 
     // 2. Staffing Alert
-    if (batchData.unassignedPensCount > 0) {
+    if ((batchData as any).unassignedPensCount > 0) {
       insights.push({
         id: "unassigned-pens",
         icon: "alert-circle",
         color: "#D35400",
-        title: "Unassigned Pens Detected",
-        description: `${batchData.unassignedPensCount} pen(s) currently have no personnel assigned to them. Assign staff immediately.`,
+        title: `Day ${currentDay} — Unassigned Pens Detected`,
+        description: `${(batchData as any).unassignedPensCount} pen(s) currently have no personnel assigned to them. Assign staff immediately.`,
         btnText: "Assign",
         route: "/penAssignment",
       });
     }
 
-    // 3. Pending Records Alert
-    if (batchData.pendingRecordsCount > 0) {
+    // 3. Pending Records
+    if ((batchData as any).pendingRecordsCount > 0) {
       insights.push({
         id: "pending-records",
         icon: "time",
         color: "#2471A3",
-        title: "Unapproved Records Pending",
-        description: `There are ${batchData.pendingRecordsCount} log submission(s) waiting for your review and approval.`,
+        title: `Day ${currentDay} — Unapproved Records Pending`,
+        description: `There are ${(batchData as any).pendingRecordsCount} log submission(s) waiting for your review and approval.`,
         btnText: "Review",
         route: "/approve",
       });
     }
 
-    // 4. Environmental / Weather Alert
+    // 4. Weather
     const T = Number(weather.temp) || 0;
     const isRainy =
       weather.icon === "rainy-outline" ||
@@ -891,7 +910,7 @@ const TechHome = () => {
         id: "weather-danger",
         icon: "alert-circle",
         color: "#C0392B",
-        title: `${T}°C — Danger Heat Level`,
+        title: `Day ${currentDay} — ${T}°C Danger Heat Level`,
         description: `Increase water frequency immediately, add electrolytes, and maximize ventilation. Watch for panting and wing-drooping.`,
       });
     } else if (T >= 32) {
@@ -899,7 +918,7 @@ const TechHome = () => {
         id: "weather-warning",
         icon: "warning",
         color: "#D35400",
-        title: `${T}°C — Heat Stress Likely`,
+        title: `Day ${currentDay} — ${T}°C Heat Stress Likely`,
         description: `Add electrolytes to water now. Increase watering frequency and check pen ventilation.`,
       });
     } else if (isRainy) {
@@ -907,7 +926,7 @@ const TechHome = () => {
         id: "weather-rain",
         icon: "rainy",
         color: "#2471A3",
-        title: `Rain Detected — Check Pens`,
+        title: `Day ${currentDay} — Rain Detected`,
         description: `Keep an eye on litter moisture. Make sure pen roofs and drainage channels are clear to prevent ammonia buildup.`,
       });
     } else {
@@ -915,20 +934,22 @@ const TechHome = () => {
         id: "weather-good",
         icon: "partly-sunny-outline",
         color: "#27AE60",
-        title: `${T}°C — Comfortable Conditions`,
+        title: `Day ${currentDay} — ${T}°C Comfortable Conditions`,
         description: `Conditions are ideal. Normal feeding and watering schedule is fine. Keep up the good work.`,
       });
     }
 
     // 5. Mortality Watch
     const mortalityRate =
-      (batchData.totalMortality / batchData.startingPopulation) * 100;
+      ((batchData as any).totalMortality /
+        (batchData as any).startingPopulation) *
+      100;
     if (mortalityRate > 5) {
       insights.push({
         id: "health-mort-high",
         icon: "alert-circle",
         color: "#C0392B",
-        title: `${batchData.totalMortality} birds lost (${mortalityRate.toFixed(1)}%)`,
+        title: `Day ${currentDay} — ${(batchData as any).totalMortality} Birds Lost (${mortalityRate.toFixed(1)}%)`,
         description: `Have the vet or technician check pen conditions and ventilation immediately.`,
       });
     } else if (mortalityRate > 2) {
@@ -936,31 +957,19 @@ const TechHome = () => {
         id: "health-mort-watch",
         icon: "warning",
         color: "#D35400",
-        title: `${batchData.totalMortality} birds lost so far (${mortalityRate.toFixed(1)}%)`,
+        title: `Day ${currentDay} — ${(batchData as any).totalMortality} Birds Lost (${mortalityRate.toFixed(1)}%)`,
         description: `Still within an acceptable range, but monitor daily to catch any potential health issues early.`,
       });
     }
 
     // 6. Harvest Watch
-    if (batchData.day >= 26) {
+    if (currentDay >= 26) {
       insights.push({
         id: "harvest-ready",
         icon: "calendar",
         color: "#27AE60",
-        title: `Day ${batchData.day} — Prepare for Harvest`,
+        title: `Day ${currentDay} — Prepare for Harvest`,
         description: `Contact buyers and arrange logistics to secure the best price for this batch.`,
-      });
-    }
-
-    // 0. Admin alert pinned at top
-    if (adminAlert) {
-      insights.unshift({
-        id: "admin-alert",
-        icon: "alert-circle",
-        color: "#C0392B",
-        title: "Alert from Admin",
-        description: adminAlert.text,
-        isNotifyPersonnel: true,
       });
     }
 
@@ -1017,10 +1026,10 @@ const TechHome = () => {
   }
 
   const displayedPens =
-    batchData && batchData.pens
+    batchData && (batchData as any).pens
       ? showAllPens
-        ? batchData.pens
-        : batchData.pens.slice(0, 2)
+        ? (batchData as any).pens
+        : (batchData as any).pens.slice(0, 2)
       : [];
 
   return (
@@ -1047,7 +1056,6 @@ const TechHome = () => {
             </Text>
           </View>
           <View className="flex-row items-center gap-3">
-            {/* Weather Mini-Badge */}
             <View className="flex-row items-center gap-1.5 border border-[#EDE0E0] rounded px-2.5 py-1.5 bg-[#FAF7F7]">
               <Ionicons name={weather.icon as any} size={16} color="#3B0A0A" />
               <View>
@@ -1072,7 +1080,6 @@ const TechHome = () => {
                 </Text>
               </View>
             </View>
-            {/* Avatar */}
             <TouchableOpacity
               onPress={() => setShowProfileMenuModal(true)}
               className="w-10 h-10 rounded-full border border-[#3B0A0A] overflow-hidden justify-center items-center bg-[#FAF7F7]"
@@ -1123,7 +1130,6 @@ const TechHome = () => {
                             {
                               fontSize: 14,
                               letterSpacing: 0.3,
-
                               color: "#FFFFFF",
                             },
                           ]}
@@ -1144,7 +1150,7 @@ const TechHome = () => {
                         numberOfLines={2}
                         adjustsFontSizeToFit
                       >
-                        {batchData.name}
+                        {(batchData as any).name}
                       </Text>
                     </View>
                     <View
@@ -1171,13 +1177,13 @@ const TechHome = () => {
                         ]}
                         className="text-[#3B0A0A]"
                       >
-                        {batchData.day}
+                        {(batchData as any).day}
                       </Text>
                       <Text
                         style={[mono, { fontSize: 13, letterSpacing: 1 }]}
                         className="text-[#7A3030]"
                       >
-                        / {batchData.totalDays}
+                        / {(batchData as any).totalDays}
                       </Text>
                     </View>
                   </View>
@@ -1206,13 +1212,13 @@ const TechHome = () => {
                           },
                         ]}
                       >
-                        {batchData.progress}%
+                        {(batchData as any).progress}%
                       </Text>
                     </View>
                     <View className="h-1 bg-white/20 rounded">
                       <View
                         className="h-full bg-white rounded"
-                        style={{ width: `${batchData.progress}%` }}
+                        style={{ width: `${(batchData as any).progress}%` }}
                       />
                     </View>
                   </View>
@@ -1234,7 +1240,7 @@ const TechHome = () => {
                         },
                       ]}
                     >
-                      Harvest: {batchData.harvestDate}
+                      Harvest: {(batchData as any).harvestDate}
                     </Text>
                   </View>
                 </View>
@@ -1280,6 +1286,7 @@ const TechHome = () => {
                               handleNotifyPersonnel(
                                 insight.id,
                                 insight.description,
+                                (batchData as any).day,
                               )
                           : undefined
                       }
@@ -1297,13 +1304,7 @@ const TechHome = () => {
               <View className="mb-5">
                 <View className="flex-row items-center mb-3.5">
                   <Text
-                    style={[
-                      mono,
-                      {
-                        fontSize: 14,
-                        letterSpacing: 0.3,
-                      },
-                    ]}
+                    style={[mono, { fontSize: 14, letterSpacing: 0.3 }]}
                     className="text-[#8C6A6A]"
                   >
                     MANAGEMENT TOOLS
@@ -1331,13 +1332,7 @@ const TechHome = () => {
               <View className="mb-5">
                 <View className="flex-row items-center mb-3.5">
                   <Text
-                    style={[
-                      mono,
-                      {
-                        fontSize: 14,
-                        letterSpacing: 0.3,
-                      },
-                    ]}
+                    style={[mono, { fontSize: 14, letterSpacing: 0.3 }]}
                     className="text-[#8C6A6A]"
                   >
                     FLOCK OVERVIEW
@@ -1347,13 +1342,13 @@ const TechHome = () => {
                 <View className="flex-row gap-2 mb-2">
                   <StatBlock
                     label="Live Pop."
-                    value={batchData.livePop}
+                    value={(batchData as any).livePop}
                     unit="hd"
                     color="#1A0505"
                   />
                   <StatBlock
                     label="Mortality"
-                    value={batchData.totalMortality}
+                    value={(batchData as any).totalMortality}
                     unit="hd"
                     color="#C0392B"
                   />
@@ -1361,13 +1356,13 @@ const TechHome = () => {
                 <View className="flex-row gap-2 mb-2">
                   <StatBlock
                     label="Feeds"
-                    value={batchData.totalFeed}
+                    value={(batchData as any).totalFeed}
                     unit="kg"
                     color="#D35400"
                   />
                   <StatBlock
                     label="Vitamins"
-                    value={batchData.totalVitamins}
+                    value={(batchData as any).totalVitamins}
                     unit="g"
                     color="#27AE60"
                   />
@@ -1409,7 +1404,7 @@ const TechHome = () => {
                           },
                         ]}
                       >
-                        {(batchData.avgWeight || 0).toLocaleString()}
+                        {((batchData as any).avgWeight || 0).toLocaleString()}
                       </Text>
                       <Text
                         style={[
@@ -1440,7 +1435,7 @@ const TechHome = () => {
               </View>
 
               {/* ── PEN DISTRIBUTION ─────────────────────────────────────── */}
-              {batchData.pens?.length > 0 && (
+              {(batchData as any).pens?.length > 0 && (
                 <View className="mb-5">
                   <View className="flex-row items-center mb-3.5">
                     <Text
@@ -1461,31 +1456,25 @@ const TechHome = () => {
                       style={[mono, { fontSize: 14, letterSpacing: 1 }]}
                       className="text-[#D4B8B8] ml-3"
                     >
-                      {batchData.pens.length} PENS
+                      {(batchData as any).pens.length} PENS
                     </Text>
                   </View>
                   {displayedPens.map((pen: any) => (
                     <PenCard key={pen.id} pen={pen} />
                   ))}
-                  {batchData.pens.length > 2 && (
+                  {(batchData as any).pens.length > 2 && (
                     <TouchableOpacity
                       onPress={() => setShowAllPens(!showAllPens)}
                       activeOpacity={0.7}
                       className="flex-row items-center justify-center border border-[#EDE0E0] rounded py-3 bg-[#FAF7F7] mt-1"
                     >
                       <Text
-                        style={[
-                          mono,
-                          {
-                            fontSize: 14,
-                            letterSpacing: 0.3,
-                          },
-                        ]}
+                        style={[mono, { fontSize: 14, letterSpacing: 0.3 }]}
                         className="text-[#8C6A6A] mr-2"
                       >
                         {showAllPens
                           ? "Show Less"
-                          : `SHOW ALL ${batchData.pens.length} PENS`}
+                          : `SHOW ALL ${(batchData as any).pens.length} PENS`}
                       </Text>
                       <Ionicons
                         name={showAllPens ? "chevron-up" : "chevron-down"}
@@ -1529,7 +1518,7 @@ const TechHome = () => {
         </View>
       </ScrollView>
 
-      {/* ── PROFILE QUICK-MENU MODAL (From Avatar) ─────────────────────────── */}
+      {/* ── PROFILE QUICK-MENU MODAL ─────────────────────────────────────────── */}
       <Modal visible={showProfileMenuModal} transparent animationType="fade">
         <TouchableOpacity
           className="flex-1"
@@ -1663,7 +1652,6 @@ const TechHome = () => {
             behavior={Platform.OS === "ios" ? "padding" : "height"}
             className="flex-1"
           >
-            {/* Header */}
             <View className="bg-[#3B0A0A] pt-10 pb-5 px-5">
               <View className="flex-row items-center">
                 <TouchableOpacity
@@ -1701,7 +1689,6 @@ const TechHome = () => {
               showsVerticalScrollIndicator={false}
               contentContainerStyle={{ paddingBottom: 60 }}
             >
-              {/* Avatar Area */}
               <View className="items-center mb-8">
                 <View className="w-24 h-24 rounded-full border-2 border-[#3B0A0A] overflow-hidden justify-center items-center bg-[#FAF7F7] mb-3">
                   {profileImage ? (
@@ -1734,7 +1721,6 @@ const TechHome = () => {
                 </TouchableOpacity>
               </View>
 
-              {/* Form Fields */}
               <View className="mb-6">
                 <View className="mb-4">
                   <Text
@@ -1817,7 +1803,6 @@ const TechHome = () => {
                       {
                         fontSize: 14,
                         letterSpacing: 0.3,
-
                         fontWeight: "bold",
                       },
                     ]}

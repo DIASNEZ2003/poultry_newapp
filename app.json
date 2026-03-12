@@ -1,11 +1,11 @@
 {
   "expo": {
-    "name": "StartUpApp",
+    "name": "DestinyPoultry",
     "slug": "StartUpApp",
     "version": "1.0.0",
     "orientation": "portrait",
     "icon": "./assets/images/icon.png",
-    "scheme": "startupapp",
+    "scheme": "destinypoultry",
     "userInterfaceStyle": "automatic",
     "newArchEnabled": true,
     "ios": {
@@ -20,7 +20,8 @@
       },
       "edgeToEdgeEnabled": true,
       "predictiveBackGestureEnabled": false,
-      "package": "com.cold_31.StartUpApp"
+      "package": "com.cold_31.StartUpApp",
+      "googleServicesFile": "./google-services.json"
     },
     "web": {
       "output": "static",
@@ -40,7 +41,10 @@
           }
         }
       ],
-      "expo-web-browser"
+      "expo-web-browser",
+      "@react-native-firebase/app",
+      "@react-native-firebase/messaging",
+      "expo-build-properties"
     ],
     "experiments": {
       "typedRoutes": true,

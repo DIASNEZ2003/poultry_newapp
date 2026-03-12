@@ -3,6 +3,8 @@ import { useIsFocused } from "@react-navigation/native";
 import * as DocumentPicker from "expo-document-picker";
 import * as ImagePicker from "expo-image-picker";
 import {
+  child,
+  get,
   onDisconnect,
   onValue,
   push,
@@ -31,6 +33,7 @@ import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { WebView } from "react-native-webview";
 import { supabase } from "../../supabaseClient";
 import { auth, db } from "../firebaseConfig";
+import { sendPushNotification } from "../pushNotifications"; // <-- ADDED THIS IMPORT
 
 const { height: SCREEN_HEIGHT } = Dimensions.get("window");
 
@@ -415,6 +418,30 @@ const PMessenger = () => {
           payload.attachmentName = fileName;
         }
         await push(ref(db, `chats/${chatId}`), payload);
+
+        // --- NEW PUSH NOTIFICATION CODE ---
+        if (!editingId) {
+          const targetUserRef = child(
+            ref(db),
+            `users/${selectedUser.uid}/pushToken`,
+          );
+          get(targetUserRef).then((snapshot) => {
+            if (snapshot.exists()) {
+              const targetPushToken = snapshot.val();
+              const notificationBody =
+                text ||
+                (file
+                  ? `Sent an attachment: ${fileName}`
+                  : "Sent a new message");
+              sendPushNotification(
+                targetPushToken,
+                "New message from Personnel",
+                notificationBody,
+              );
+            }
+          });
+        }
+        // ----------------------------------
       }
     } catch {
       Alert.alert("Error", "Failed to send message. Check your connection.");
@@ -896,10 +923,7 @@ const PMessenger = () => {
               <View
                 style={{
                   position: "absolute",
-                  top: 0,
-                  left: 0,
-                  right: 0,
-                  bottom: 0,
+                  inset: 0,
                   zIndex: 10,
                   justifyContent: "center",
                   alignItems: "center",

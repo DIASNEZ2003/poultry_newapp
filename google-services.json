@@ -1,0 +1,30 @@
+{
+  "project_info": {
+    "project_number": "850139505584",
+    "firebase_url": "https://final-future-d1547-default-rtdb.firebaseio.com",
+    "project_id": "final-future-d1547",
+    "storage_bucket": "final-future-d1547.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:850139505584:android:5a3b08d12479a33d06ac75",
+        "android_client_info": {
+          "package_name": "com.cold_31.StartUpApp"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyC0D6KHkghMf8AFqbx2bJYriFMobohBdoI"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}

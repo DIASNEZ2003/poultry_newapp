@@ -3,6 +3,8 @@ import { useIsFocused } from "@react-navigation/native";
 import * as DocumentPicker from "expo-document-picker";
 import * as ImagePicker from "expo-image-picker";
 import {
+  child,
+  get,
   onDisconnect,
   onValue,
   push,
@@ -32,6 +34,7 @@ import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { WebView } from "react-native-webview";
 import { supabase } from "../../supabaseClient";
 import { auth, db } from "../firebaseConfig";
+import { sendPushNotification } from "../pushNotifications"; // <-- ADDED THIS IMPORT
 
 const { height: SCREEN_HEIGHT } = Dimensions.get("window");
 
@@ -430,6 +433,30 @@ const TechMessenger = () => {
           payload.attachmentName = fileName;
         }
         await push(ref(db, `chats/${chatId}`), payload);
+
+        // --- NEW PUSH NOTIFICATION CODE ---
+        if (!editingId) {
+          const targetUserRef = child(
+            ref(db),
+            `users/${selectedUser.uid}/pushToken`,
+          );
+          get(targetUserRef).then((snapshot) => {
+            if (snapshot.exists()) {
+              const targetPushToken = snapshot.val();
+              const notificationBody =
+                text ||
+                (file
+                  ? `Sent an attachment: ${fileName}`
+                  : "Sent a new message");
+              sendPushNotification(
+                targetPushToken,
+                "New message from Technician",
+                notificationBody,
+              );
+            }
+          });
+        }
+        // ----------------------------------
       }
     } catch {
       Alert.alert("Error", "Failed to send message. Check your connection.");
@@ -481,7 +508,7 @@ const TechMessenger = () => {
         personnel.map(async (p) => {
           const chatId = [cu.uid, p.uid].sort().join("_");
           const newMsgRef = push(ref(db, `chats/${chatId}`));
-          return set(newMsgRef, {
+          await set(newMsgRef, {
             sender: cu.uid,
             senderUid: cu.uid,
             text: `📢 ${broadcastText.trim()}`,
@@ -490,6 +517,20 @@ const TechMessenger = () => {
             status: "sent",
             isAlert: true,
           });
+
+          // --- NEW PUSH NOTIFICATION CODE ---
+          const targetUserRef = child(ref(db), `users/${p.uid}/pushToken`);
+          get(targetUserRef).then((snapshot) => {
+            if (snapshot.exists()) {
+              const targetPushToken = snapshot.val();
+              sendPushNotification(
+                targetPushToken,
+                "Broadcast from Technician",
+                broadcastText.trim(),
+              );
+            }
+          });
+          // ----------------------------------
         }),
       );
       setBroadcastSent(true);
