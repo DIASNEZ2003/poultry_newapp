@@ -1,5 +1,6 @@
 import { Ionicons } from "@expo/vector-icons";
 import * as ImagePicker from "expo-image-picker";
+import * as Notifications from "expo-notifications"; // <-- ADDED EXPO NOTIFICATIONS IMPORT
 import { useRouter } from "expo-router";
 import { signOut } from "firebase/auth";
 import {
@@ -438,7 +439,7 @@ const TechHome = () => {
     },
   ];
 
-  // Fetch Current User & Register for Push Notifications
+  // Fetch Current User
   useEffect(() => {
     const user = auth.currentUser;
     if (user) {
@@ -576,6 +577,7 @@ const TechHome = () => {
             seen: false,
             status: "sent",
             isAlert: true,
+            // ── NEW: stamp the batch day so personnel can auto-dismiss stale alerts
             batchDay: currentBatchDay,
           });
         }),
@@ -832,7 +834,8 @@ const TechHome = () => {
     const currentDay = (batchData as any).day as number;
     const insights: any[] = [];
 
-    // 0. Admin alert
+    // 0. Admin alert — only show if it was sent TODAY (same calendar date).
+    //    If the day has advanced (e.g. alert was Day 10, now Day 11), hide it.
     if (adminAlert) {
       const alertTs = adminAlert.timestamp;
       const sentDate = alertTs ? new Date(alertTs) : null;
@@ -975,6 +978,37 @@ const TechHome = () => {
 
     return insights;
   }, [batchData, weather, adminAlert]);
+
+  // ── Local Notification for Insights ─────────────────────────────
+  const [notifiedInsights, setNotifiedInsights] = useState<Set<string>>(
+    new Set(),
+  );
+
+  useEffect(() => {
+    if (actionableInsights && actionableInsights.length > 0) {
+      actionableInsights.forEach((insight) => {
+        // If we haven't sent a notification for this specific insight yet
+        if (!notifiedInsights.has(insight.id)) {
+          // Trigger the phone to buzz and show the alert!
+          Notifications.scheduleNotificationAsync({
+            content: {
+              title: "Farm Alert: " + insight.title,
+              body: insight.description,
+              sound: true,
+            },
+            trigger: null, // Send immediately
+          });
+
+          // Remember that we notified them, so we don't spam their phone
+          setNotifiedInsights((prev) => {
+            const next = new Set(prev);
+            next.add(insight.id);
+            return next;
+          });
+        }
+      });
+    }
+  }, [actionableInsights]);
 
   const uploadProfileImage = async () => {
     try {

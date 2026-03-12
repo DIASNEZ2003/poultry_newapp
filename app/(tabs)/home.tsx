@@ -1,5 +1,6 @@
 import { Ionicons } from "@expo/vector-icons";
 import * as ImagePicker from "expo-image-picker";
+import * as Notifications from "expo-notifications"; // <-- ADDED EXPO NOTIFICATIONS IMPORT
 import { useRouter } from "expo-router";
 import { signOut } from "firebase/auth";
 import { onDisconnect, onValue, ref, update } from "firebase/database";
@@ -831,6 +832,37 @@ const Home = () => {
 
     return insights;
   }, [batchData, weather, assignedPen, techAlertObj]);
+
+  // ── Local Notification for Insights ─────────────────────────────
+  const [notifiedInsights, setNotifiedInsights] = useState<Set<string>>(
+    new Set(),
+  );
+
+  useEffect(() => {
+    if (actionableInsights && actionableInsights.length > 0) {
+      actionableInsights.forEach((insight) => {
+        // If we haven't sent a notification for this specific insight yet
+        if (!notifiedInsights.has(insight.id)) {
+          // Trigger the phone to buzz and show the alert!
+          Notifications.scheduleNotificationAsync({
+            content: {
+              title: "Farm Alert: " + insight.title,
+              body: insight.description,
+              sound: true,
+            },
+            trigger: null, // Send immediately
+          });
+
+          // Remember that we notified them, so we don't spam their phone
+          setNotifiedInsights((prev) => {
+            const next = new Set(prev);
+            next.add(insight.id);
+            return next;
+          });
+        }
+      });
+    }
+  }, [actionableInsights]);
 
   const uploadProfileImage = async () => {
     try {

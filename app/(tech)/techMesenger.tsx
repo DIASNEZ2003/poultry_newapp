@@ -2,6 +2,7 @@ import { Ionicons } from "@expo/vector-icons";
 import { useIsFocused } from "@react-navigation/native";
 import * as DocumentPicker from "expo-document-picker";
 import * as ImagePicker from "expo-image-picker";
+import * as Notifications from "expo-notifications"; // <-- ADDED EXPO NOTIFICATIONS
 import {
   child,
   get,
@@ -13,7 +14,7 @@ import {
   set,
   update,
 } from "firebase/database";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
   ActivityIndicator,
   Alert,
@@ -34,7 +35,7 @@ import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { WebView } from "react-native-webview";
 import { supabase } from "../../supabaseClient";
 import { auth, db } from "../firebaseConfig";
-import { sendPushNotification } from "../pushNotifications"; // <-- ADDED THIS IMPORT
+import { sendPushNotification } from "../pushNotifications";
 
 const { height: SCREEN_HEIGHT } = Dimensions.get("window");
 
@@ -297,6 +298,32 @@ const TechMessenger = () => {
       setUnreadCounts(counts);
     });
   }, [usersList]);
+
+  // ── Local Notification for Unread Messages ────────────────────────────────
+  const [prevUnreadTotal, setPrevUnreadTotal] = useState(0);
+
+  const currentUnreadTotal = useMemo(() => {
+    // Sum up all unread messages across all chats
+    return Object.values(unreadCounts).reduce(
+      (sum: number, count: any) => sum + count,
+      0,
+    ) as number;
+  }, [unreadCounts]);
+
+  useEffect(() => {
+    // If the total unread count INCREASES, trigger a local notification
+    if (currentUnreadTotal > prevUnreadTotal) {
+      Notifications.scheduleNotificationAsync({
+        content: {
+          title: "New Message Received!",
+          body: `You have ${currentUnreadTotal} unread message(s) in your inbox.`,
+          sound: true,
+        },
+        trigger: null, // Send immediately
+      });
+    }
+    setPrevUnreadTotal(currentUnreadTotal);
+  }, [currentUnreadTotal]);
 
   // ── Messages ──────────────────────────────────────────────────────────────
   useEffect(() => {
