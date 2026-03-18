@@ -2,7 +2,7 @@ import { Ionicons } from "@expo/vector-icons";
 import { useIsFocused } from "@react-navigation/native";
 import * as DocumentPicker from "expo-document-picker";
 import * as ImagePicker from "expo-image-picker";
-import * as Notifications from "expo-notifications"; // <-- ADDED EXPO NOTIFICATIONS
+import * as Notifications from "expo-notifications";
 import {
   child,
   get,
@@ -28,17 +28,19 @@ import {
   Text,
   TextInput,
   TouchableOpacity,
-  View,
+  View
 } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { WebView } from "react-native-webview";
 import { supabase } from "../../supabaseClient";
 import { auth, db } from "../firebaseConfig";
-import { sendPushNotification } from "../pushNotifications";
+import {
+  registerForPushNotificationsAsync,
+  sendPushNotification,
+} from "../pushNotifications";
 
 const { height: SCREEN_HEIGHT } = Dimensions.get("window");
 
-// ── Design tokens (mirrors TechnicianRecords) ─────────────────────────────────
 const C = {
   maroon: "#3B0A0A",
   maroonMid: "#6B1A1A",
@@ -60,14 +62,12 @@ const mono = {
   fontFamily: Platform.OS === "ios" ? "System" : "sans-serif",
 };
 
-// Changed USER to TECHNICIAN
 const ROLE_COLOR: any = {
   admin: "#2471A3",
   TECHNICIAN: "#D35400",
   PERSONNEL: "#5B4A8A",
 };
 
-// ── Helpers ───────────────────────────────────────────────────────────────────
 const formatTime = (ts: any) => {
   if (!ts) return "";
   const d = new Date(ts),
@@ -82,7 +82,6 @@ const formatTime = (ts: any) => {
     : `${d.toLocaleDateString([], { month: "short", day: "numeric" })}, ${t}`;
 };
 
-// ── Role pill ─────────────────────────────────────────────────────────────────
 const RolePill = ({ role }: any) => {
   const color = ROLE_COLOR[role] || C.muted;
   return (
@@ -112,7 +111,6 @@ const RolePill = ({ role }: any) => {
   );
 };
 
-// ── Status dot ────────────────────────────────────────────────────────────────
 const StatusDot = ({ online, size = 10, border = 2 }: any) => (
   <View
     style={{
@@ -140,39 +138,54 @@ const PMessenger = () => {
   const [uploading, setUploading] = useState(false);
   const [loading, setLoading] = useState(true);
   const [editingId, setEditingId] = useState(null);
-  const [keyboardHeight, setKeyboardHeight] = useState(0);
   const [adminStatus, setAdminStatus] = useState("offline");
   const [liveStatus, setLiveStatus] = useState("offline");
   const [viewingImage, setViewingImage] = useState<any>(null);
   const [documentToView, setDocumentToView] = useState<any>(null);
   const [isDocLoading, setIsDocLoading] = useState(true);
+  const [showBroadcast, setShowBroadcast] = useState(false);
+  const [broadcastText, setBroadcastText] = useState("");
+  const [broadcastSent, setBroadcastSent] = useState(false);
+  const [broadcastSending, setBroadcastSending] = useState(false);
+  const [keyboardHeight, setKeyboardHeight] = useState(0);
 
   const flatListRef = useRef<any>(null);
   const isFocused = useIsFocused();
   const inputRef = useRef<any>(null);
-  const TAB_BAR_HEIGHT = 88;
 
-  // ── Keyboard ──────────────────────────────────────────────────────────────
+  // ── Push Notification Token Registration ────────
+  useEffect(() => {
+    const cu = auth.currentUser;
+    if (!cu) return;
+    registerForPushNotificationsAsync().then((token) => {
+      if (token) {
+        update(ref(db, `users/${cu.uid}`), { pushToken: token });
+      }
+    });
+  }, []);
+
+  // ── Keyboard height tracking ────────
   useEffect(() => {
     const show = Platform.OS === "ios" ? "keyboardWillShow" : "keyboardDidShow";
     const hide = Platform.OS === "ios" ? "keyboardWillHide" : "keyboardDidHide";
-    const onShow = (e: any) => {
+
+    const s1 = Keyboard.addListener(show, (e) => {
       setKeyboardHeight(e.endCoordinates.height);
       setTimeout(
         () => flatListRef.current?.scrollToEnd({ animated: true }),
         100,
       );
-    };
-    const onHide = () => setKeyboardHeight(0);
-    const s1 = Keyboard.addListener(show, onShow);
-    const s2 = Keyboard.addListener(hide, onHide);
+    });
+    const s2 = Keyboard.addListener(hide, () => {
+      setKeyboardHeight(0);
+    });
     return () => {
       s1.remove();
       s2.remove();
     };
   }, []);
 
-  // ── Admin status ─────────────────────────────────────────────────────────
+  // ── Admin status ──────────────────────────────────────────────────────────
   useEffect(() => {
     const adminUid = "KLQoW8g03nT22j2vCd9NELRXq0r1";
     return onValue(ref(db, `users/${adminUid}`), (snap) => {
@@ -180,7 +193,7 @@ const PMessenger = () => {
     });
   }, []);
 
-  // ── Presence ─────────────────────────────────────────────────────────────
+  // ── Presence ──────────────────────────────────────────────────────────────
   useEffect(() => {
     const cu = auth.currentUser;
     if (!cu) return;
@@ -284,19 +297,17 @@ const PMessenger = () => {
     });
   }, [usersList]);
 
-  // ── Local Notification for Unread Messages ────────────────────────────────
+  // ── Local notification for new unread messages ────────────────────────────
   const [prevUnreadTotal, setPrevUnreadTotal] = useState(0);
-
-  const currentUnreadTotal = useMemo(() => {
-    // Sum up all unread messages across all chats
-    return Object.values(unreadCounts).reduce(
-      (sum: number, count: any) => sum + count,
-      0,
-    ) as number;
-  }, [unreadCounts]);
-
+  const currentUnreadTotal = useMemo(
+    () =>
+      Object.values(unreadCounts).reduce(
+        (sum: number, count: any) => sum + count,
+        0,
+      ) as number,
+    [unreadCounts],
+  );
   useEffect(() => {
-    // If the total unread count INCREASES, trigger a local notification
     if (currentUnreadTotal > prevUnreadTotal) {
       Notifications.scheduleNotificationAsync({
         content: {
@@ -304,7 +315,7 @@ const PMessenger = () => {
           body: `You have ${currentUnreadTotal} unread message(s) in your inbox.`,
           sound: true,
         },
-        trigger: null, // Send immediately
+        trigger: null,
       });
     }
     setPrevUnreadTotal(currentUnreadTotal);
@@ -368,6 +379,7 @@ const PMessenger = () => {
         isImage: true,
       });
   };
+
   const handlePickDocument = async () => {
     const r = await DocumentPicker.getDocumentAsync({
       type: "*/*",
@@ -446,7 +458,6 @@ const PMessenger = () => {
         }
         await push(ref(db, `chats/${chatId}`), payload);
 
-        // --- NEW PUSH NOTIFICATION CODE ---
         if (!editingId) {
           const targetUserRef = child(
             ref(db),
@@ -468,7 +479,6 @@ const PMessenger = () => {
             }
           });
         }
-        // ----------------------------------
       }
     } catch {
       Alert.alert("Error", "Failed to send message. Check your connection.");
@@ -505,9 +515,274 @@ const PMessenger = () => {
     setViewingImage(null);
     setDocumentToView(null);
     setIsDocLoading(true);
+    setShowBroadcast(false);
   };
 
-  // ── Shared image modal ─────────────────────────────────────────────────────
+  const handleBroadcast = async () => {
+    if (!broadcastText.trim()) return;
+    const cu = auth.currentUser;
+    if (!cu) return;
+    setBroadcastSending(true);
+    try {
+      const targetUsers = usersList.filter((u) => u.uid !== cu.uid);
+      await Promise.all(
+        targetUsers.map(async (p) => {
+          const chatId = [cu.uid, p.uid].sort().join("_");
+          const newMsgRef = push(ref(db, `chats/${chatId}`));
+          await update(ref(db, `chats/${chatId}/${newMsgRef.key}`), {
+            sender: cu.uid,
+            senderUid: cu.uid,
+            text: `📢 ${broadcastText.trim()}`,
+            timestamp: Date.now(),
+            seen: false,
+            status: "sent",
+            isAlert: true,
+          });
+
+          const targetUserRef = child(ref(db), `users/${p.uid}/pushToken`);
+          get(targetUserRef).then((snapshot) => {
+            if (snapshot.exists()) {
+              const targetPushToken = snapshot.val();
+              sendPushNotification(
+                targetPushToken,
+                "Broadcast from Admin",
+                broadcastText.trim(),
+              );
+            }
+          });
+        }),
+      );
+      setBroadcastSent(true);
+    } catch {
+      Alert.alert("Error", "Failed to send. Check your connection.");
+    } finally {
+      setBroadcastSending(false);
+    }
+  };
+
+  const BroadcastModal = () => (
+    <Modal visible={showBroadcast} transparent animationType="slide">
+      <View
+        style={{
+          flex: 1,
+          backgroundColor: "rgba(0,0,0,0.55)",
+          justifyContent: "flex-end",
+        }}
+      >
+        <View
+          style={{
+            backgroundColor: C.white,
+            borderTopLeftRadius: 16,
+            borderTopRightRadius: 16,
+            overflow: "hidden",
+          }}
+        >
+          <View
+            style={{
+              backgroundColor: C.maroon,
+              paddingHorizontal: 20,
+              paddingTop: 20,
+              paddingBottom: 16,
+              flexDirection: "row",
+              alignItems: "center",
+              justifyContent: "space-between",
+            }}
+          >
+            <View
+              style={{ flexDirection: "row", alignItems: "center", gap: 10 }}
+            >
+              <View
+                style={{
+                  width: 34,
+                  height: 34,
+                  borderRadius: 17,
+                  backgroundColor: "rgba(255,255,255,0.15)",
+                  alignItems: "center",
+                  justifyContent: "center",
+                }}
+              >
+                <Ionicons name="megaphone-outline" size={17} color={C.white} />
+              </View>
+              <View>
+                <Text
+                  style={[
+                    mono,
+                    {
+                      fontSize: 13,
+                      letterSpacing: 0.2,
+                      color: "rgba(255,255,255,0.6)",
+                      textTransform: "uppercase",
+                    },
+                  ]}
+                >
+                  BROADCAST
+                </Text>
+                <Text
+                  style={[
+                    font("700"),
+                    { fontSize: 15, color: C.white, letterSpacing: -0.3 },
+                  ]}
+                >
+                  Notify All Personnel
+                </Text>
+              </View>
+            </View>
+            <TouchableOpacity
+              onPress={() => setShowBroadcast(false)}
+              style={{
+                padding: 6,
+                backgroundColor: "rgba(255,255,255,0.1)",
+                borderRadius: 20,
+              }}
+            >
+              <Ionicons name="close" size={18} color="rgba(255,255,255,0.8)" />
+            </TouchableOpacity>
+          </View>
+
+          <View style={{ padding: 20 }}>
+            {broadcastSent ? (
+              <View style={{ alignItems: "center", paddingVertical: 28 }}>
+                <View
+                  style={{
+                    width: 56,
+                    height: 56,
+                    borderRadius: 28,
+                    backgroundColor: "#ECFDF5",
+                    alignItems: "center",
+                    justifyContent: "center",
+                    marginBottom: 16,
+                  }}
+                >
+                  <Ionicons name="checkmark-circle" size={32} color={C.green} />
+                </View>
+                <Text
+                  style={[
+                    font("700"),
+                    { fontSize: 18, color: C.text, marginBottom: 8 },
+                  ]}
+                >
+                  Broadcast Sent!
+                </Text>
+                <Text
+                  style={[
+                    mono,
+                    {
+                      fontSize: 14,
+                      color: C.muted,
+                      textAlign: "center",
+                      lineHeight: 20,
+                      marginBottom: 24,
+                    },
+                  ]}
+                >
+                  Your message has been delivered to all registered personnel.
+                </Text>
+                <TouchableOpacity
+                  onPress={() => {
+                    setShowBroadcast(false);
+                    setBroadcastSent(false);
+                    setBroadcastText("");
+                  }}
+                  style={{
+                    backgroundColor: C.maroon,
+                    paddingHorizontal: 32,
+                    paddingVertical: 12,
+                    borderRadius: 8,
+                  }}
+                >
+                  <Text style={[mono, { color: C.white, fontWeight: "bold" }]}>
+                    DONE
+                  </Text>
+                </TouchableOpacity>
+              </View>
+            ) : (
+              <>
+                <Text
+                  style={[
+                    mono,
+                    {
+                      fontSize: 14,
+                      letterSpacing: 0.2,
+                      color: C.muted,
+                      marginBottom: 8,
+                    },
+                  ]}
+                >
+                  Message
+                </Text>
+                <TextInput
+                  value={broadcastText}
+                  onChangeText={setBroadcastText}
+                  placeholder="Type your message to all personnel..."
+                  placeholderTextColor={C.mutedLight}
+                  multiline
+                  numberOfLines={4}
+                  style={[
+                    font("400"),
+                    {
+                      fontSize: 13,
+                      color: C.text,
+                      borderWidth: 1,
+                      borderColor: C.border,
+                      borderRadius: 8,
+                      padding: 14,
+                      backgroundColor: C.bg,
+                      minHeight: 100,
+                      textAlignVertical: "top",
+                      marginBottom: 16,
+                    },
+                  ]}
+                />
+                <View style={{ flexDirection: "row", gap: 10 }}>
+                  <TouchableOpacity
+                    onPress={() => setShowBroadcast(false)}
+                    style={{
+                      flex: 1,
+                      paddingVertical: 14,
+                      borderWidth: 1,
+                      borderColor: C.border,
+                      borderRadius: 8,
+                      alignItems: "center",
+                    }}
+                  >
+                    <Text style={[mono, { fontSize: 14, color: C.muted }]}>
+                      CANCEL
+                    </Text>
+                  </TouchableOpacity>
+                  <TouchableOpacity
+                    onPress={handleBroadcast}
+                    disabled={broadcastSending || !broadcastText.trim()}
+                    style={{
+                      flex: 1,
+                      paddingVertical: 14,
+                      borderRadius: 8,
+                      alignItems: "center",
+                      justifyContent: "center",
+                      flexDirection: "row",
+                      gap: 8,
+                      backgroundColor: !broadcastText.trim()
+                        ? C.mutedLight
+                        : C.maroon,
+                    }}
+                  >
+                    {broadcastSending ? (
+                      <ActivityIndicator size="small" color={C.white} />
+                    ) : (
+                      <Ionicons name="send" size={14} color={C.white} />
+                    )}
+                    <Text style={[mono, { fontSize: 14, color: C.white }]}>
+                      {broadcastSending ? "SENDING..." : "SEND TO ALL"}
+                    </Text>
+                  </TouchableOpacity>
+                </View>
+              </>
+            )}
+          </View>
+        </View>
+      </View>
+    </Modal>
+  );
+
   const ImageModal = () => (
     <Modal
       visible={!!viewingImage}
@@ -554,8 +829,7 @@ const PMessenger = () => {
     return (
       <SafeAreaView style={{ flex: 1, backgroundColor: C.bg }}>
         <ImageModal />
-
-        {/* Header - px-10 equivalent applied */}
+        <BroadcastModal />
         <View
           style={{
             backgroundColor: C.maroon,
@@ -578,17 +852,57 @@ const PMessenger = () => {
           >
             PERSONNEL / MESSAGING
           </Text>
-          <Text
-            style={[
-              font("700"),
-              { fontSize: 22, color: C.white, letterSpacing: -0.5 },
-            ]}
+          <View
+            style={{
+              flexDirection: "row",
+              alignItems: "center",
+              justifyContent: "space-between",
+            }}
           >
-            Inbox
-          </Text>
+            <Text
+              style={[
+                font("700"),
+                { fontSize: 22, color: C.white, letterSpacing: -0.5 },
+              ]}
+            >
+              Inbox
+            </Text>
+            <TouchableOpacity
+              onPress={() => {
+                setShowBroadcast(true);
+                setBroadcastText("");
+                setBroadcastSent(false);
+              }}
+              style={{
+                flexDirection: "row",
+                alignItems: "center",
+                gap: 6,
+                backgroundColor: "rgba(255,255,255,0.15)",
+                paddingHorizontal: 12,
+                paddingVertical: 7,
+                borderRadius: 6,
+                borderWidth: 1,
+                borderColor: "rgba(255,255,255,0.2)",
+              }}
+            >
+              <Ionicons name="megaphone-outline" size={14} color={C.white} />
+              <Text
+                style={[
+                  mono,
+                  {
+                    fontSize: 13,
+                    letterSpacing: 0.2,
+                    color: C.white,
+                    textTransform: "uppercase",
+                  },
+                ]}
+              >
+                Broadcast
+              </Text>
+            </TouchableOpacity>
+          </View>
         </View>
 
-        {/* Search */}
         <View
           style={{
             backgroundColor: C.white,
@@ -629,7 +943,6 @@ const PMessenger = () => {
           </View>
         </View>
 
-        {/* Section label */}
         <View
           style={{
             paddingHorizontal: 16,
@@ -710,6 +1023,10 @@ const PMessenger = () => {
           <FlatList
             data={filteredUsers}
             keyExtractor={(i) => i.uid}
+            initialNumToRender={15}
+            maxToRenderPerBatch={10}
+            windowSize={10}
+            removeClippedSubviews={Platform.OS === "android"}
             contentContainerStyle={{
               paddingHorizontal: 16,
               paddingBottom: 100,
@@ -720,15 +1037,12 @@ const PMessenger = () => {
                 (item.role === "admin"
                   ? adminStatus
                   : item.status || "offline") === "online";
-
-              // CHANGED to properly map tech/user to TECHNICIAN
               const displayRole =
                 item.role === "admin"
                   ? "ADMIN"
                   : item.role === "tech" || item.role === "user"
                     ? "TECHNICIAN"
                     : "PERSONNEL";
-
               return (
                 <TouchableOpacity
                   onPress={() => {
@@ -750,7 +1064,6 @@ const PMessenger = () => {
                     paddingHorizontal: 14,
                   }}
                 >
-                  {/* Avatar */}
                   <View style={{ position: "relative", marginRight: 14 }}>
                     <View
                       style={{
@@ -799,8 +1112,6 @@ const PMessenger = () => {
                       <StatusDot online={online} size={12} border={2} />
                     </View>
                   </View>
-
-                  {/* Info */}
                   <View style={{ flex: 1 }}>
                     <Text
                       style={[
@@ -858,7 +1169,6 @@ const PMessenger = () => {
                       </Text>
                     </View>
                   </View>
-
                   <Ionicons
                     name="chevron-forward"
                     size={16}
@@ -884,8 +1194,6 @@ const PMessenger = () => {
   const currentStatus =
     (isTargetAdmin ? adminStatus : liveTarget?.status || "offline") ===
     "online";
-
-  // CHANGED to properly map tech/user to TECHNICIAN
   const headerRole = isTargetAdmin
     ? "ADMIN"
     : liveTarget?.role === "tech" || liveTarget?.role === "user"
@@ -908,7 +1216,7 @@ const PMessenger = () => {
               flexDirection: "row",
               alignItems: "center",
               justifyContent: "space-between",
-              paddingHorizontal: 40, // px-10 equivalent
+              paddingHorizontal: 40,
               paddingVertical: 14,
               backgroundColor: C.maroon,
             }}
@@ -994,7 +1302,7 @@ const PMessenger = () => {
           backgroundColor: C.maroon,
           paddingTop: 40,
           paddingBottom: 14,
-          paddingHorizontal: 40, // px-10 equivalent
+          paddingHorizontal: 40,
           flexDirection: "row",
           alignItems: "center",
         }}
@@ -1157,486 +1465,508 @@ const PMessenger = () => {
         />
       </View>
 
-      {/* Messages */}
-      <FlatList
-        ref={flatListRef}
-        data={messages}
-        keyExtractor={(i) => i.id}
-        style={{ backgroundColor: C.bg }}
-        contentContainerStyle={{ padding: 16, paddingBottom: 20 }}
-        onContentSizeChange={() =>
-          messages.length > 0 &&
-          flatListRef.current?.scrollToEnd({ animated: true })
-        }
-        onLayout={() =>
-          messages.length > 0 &&
-          flatListRef.current?.scrollToEnd({ animated: false })
-        }
-        renderItem={({ item }) => {
-          const cu = auth.currentUser;
-          const sender = item.sender || item.senderUid;
-          const isMe = sender === cu?.uid || sender === "tech";
-          const isImage =
-            item.attachmentType?.startsWith("image/") ||
-            (!item.attachmentType && item.attachmentUrl);
-          const isDoc = item.attachmentUrl && !isImage;
+      {/* ── Chat Content ── */}
+      <View style={{ flex: 1 }}>
+        {/* Messages */}
+        <FlatList
+          ref={flatListRef}
+          data={messages}
+          keyExtractor={(i) => i.id}
+          initialNumToRender={20}
+          maxToRenderPerBatch={10}
+          windowSize={10}
+          removeClippedSubviews={Platform.OS === "android"}
+          style={{ backgroundColor: C.bg }}
+          contentContainerStyle={{
+            padding: 16,
+            paddingBottom: 20,
+          }}
+          onContentSizeChange={() =>
+            messages.length > 0 &&
+            flatListRef.current?.scrollToEnd({ animated: true })
+          }
+          onLayout={() =>
+            messages.length > 0 &&
+            flatListRef.current?.scrollToEnd({ animated: false })
+          }
+          renderItem={({ item }) => {
+            const cu = auth.currentUser;
+            const sender = item.sender || item.senderUid;
+            const isMe = sender === cu?.uid || sender === "tech";
+            const isImage =
+              item.attachmentType?.startsWith("image/") ||
+              (!item.attachmentType && item.attachmentUrl);
+            const isDoc = item.attachmentUrl && !isImage;
 
-          return (
-            <View
-              style={{
-                marginBottom: 14,
-                alignItems: isMe ? "flex-end" : "flex-start",
-              }}
-            >
-              {!isMe && (
-                <Text
-                  style={[
-                    mono,
-                    {
-                      fontSize: 13,
-                      letterSpacing: 0.2,
-                      color: C.muted,
-                      marginBottom: 4,
-                      marginLeft: 2,
-                      textTransform: "uppercase",
-                    },
-                  ]}
-                >
-                  {getSenderName(sender)}
-                </Text>
-              )}
-
-              <TouchableOpacity
-                onLongPress={() =>
-                  isMe &&
-                  Alert.alert("Options", "Choose an action", [
-                    ...(item.text && !item.attachmentUrl
-                      ? [
-                          {
-                            text: "Edit",
-                            onPress: () => {
-                              setInputText(item.text);
-                              setEditingId(item.id);
-                              inputRef.current?.focus();
-                            },
-                          },
-                        ]
-                      : []),
-                    {
-                      text: "Delete",
-                      onPress: () => handleDelete(item.id),
-                      style: "destructive",
-                    },
-                    { text: "Cancel", style: "cancel" },
-                  ])
-                }
-                activeOpacity={0.85}
-                style={{
-                  maxWidth: "82%",
-                  backgroundColor: isMe ? C.maroon : C.white,
-                  borderWidth: 1,
-                  borderColor: isMe ? C.maroonMid : C.border,
-                  borderRadius: 4,
-                  borderBottomRightRadius: isMe ? 0 : 4,
-                  borderBottomLeftRadius: isMe ? 4 : 0,
-                  paddingVertical: 10,
-                  paddingHorizontal: 14,
-                }}
-              >
-                {isImage && (
-                  <TouchableOpacity
-                    onPress={() => setViewingImage(item.attachmentUrl)}
-                    activeOpacity={0.9}
-                    style={{
-                      marginBottom: item.text ? 8 : 0,
-                      borderRadius: 2,
-                      overflow: "hidden",
-                    }}
-                  >
-                    <Image
-                      source={{ uri: item.attachmentUrl }}
-                      style={{ width: 200, height: 200 }}
-                      resizeMode="cover"
-                    />
-                  </TouchableOpacity>
-                )}
-
-                {isDoc && (
-                  <View
-                    style={{
-                      flexDirection: "row",
-                      alignItems: "center",
-                      backgroundColor: C.bg,
-                      padding: 10,
-                      borderRadius: 4,
-                      borderWidth: 1,
-                      borderColor: C.border,
-                      marginBottom: item.text ? 8 : 0,
-                      width: 220,
-                    }}
-                  >
-                    <TouchableOpacity
-                      style={{
-                        flex: 1,
-                        flexDirection: "row",
-                        alignItems: "center",
-                      }}
-                      onPress={() =>
-                        openDocumentInApp(
-                          item.attachmentUrl,
-                          item.attachmentName,
-                        )
-                      }
-                      activeOpacity={0.7}
-                    >
-                      <View
-                        style={{
-                          padding: 6,
-                          backgroundColor: "#EFF6FF",
-                          borderRadius: 4,
-                        }}
-                      >
-                        <Ionicons
-                          name="document-text"
-                          size={18}
-                          color="#2563eb"
-                        />
-                      </View>
-                      <View style={{ marginLeft: 10, flexShrink: 1 }}>
-                        <Text
-                          style={[font("700"), { fontSize: 14, color: C.text }]}
-                          numberOfLines={1}
-                        >
-                          {item.attachmentName || "Document"}
-                        </Text>
-                        <Text
-                          style={[
-                            mono,
-                            {
-                              fontSize: 13,
-                              color: C.muted,
-                              marginTop: 2,
-                              textTransform: "uppercase",
-                              letterSpacing: 0.8,
-                            },
-                          ]}
-                        >
-                          TAP TO VIEW
-                        </Text>
-                      </View>
-                    </TouchableOpacity>
-                    <TouchableOpacity
-                      style={{
-                        padding: 6,
-                        marginLeft: 4,
-                        backgroundColor: C.border,
-                        borderRadius: 4,
-                      }}
-                      onPress={() => Linking.openURL(item.attachmentUrl)}
-                    >
-                      <Ionicons name="download" size={14} color={C.muted} />
-                    </TouchableOpacity>
-                  </View>
-                )}
-
-                {item.text ? (
-                  <Text
-                    style={[
-                      font("400"),
-                      {
-                        fontSize: 14,
-                        color: isMe ? C.white : C.text,
-                        lineHeight: 20,
-                      },
-                    ]}
-                  >
-                    {item.text}
-                  </Text>
-                ) : null}
-              </TouchableOpacity>
-
-              {/* Metadata */}
+            return (
               <View
                 style={{
-                  flexDirection: "row",
-                  alignItems: "center",
-                  marginTop: 4,
-                  paddingHorizontal: 2,
-                  gap: 6,
+                  marginBottom: 14,
+                  alignItems: isMe ? "flex-end" : "flex-start",
                 }}
               >
-                <Text
-                  style={[
-                    mono,
-                    { fontSize: 13, color: C.muted, letterSpacing: 0.5 },
-                  ]}
-                >
-                  {formatTime(item.timestamp)}
-                </Text>
-                {item.isEdited && (
-                  <Text
-                    style={[
-                      mono,
-                      { fontSize: 13, color: C.mutedLight, letterSpacing: 0.5 },
-                    ]}
-                  >
-                    (edited)
-                  </Text>
-                )}
-                {isMe && (
+                {!isMe && (
                   <Text
                     style={[
                       mono,
                       {
                         fontSize: 13,
-                        letterSpacing: 0.8,
+                        letterSpacing: 0.2,
+                        color: C.muted,
+                        marginBottom: 4,
+                        marginLeft: 2,
                         textTransform: "uppercase",
-                        color: item.seen ? "#2471A3" : C.mutedLight,
                       },
                     ]}
                   >
-                    ·{" "}
-                    {item.seen
-                      ? "SEEN"
-                      : item.status === "delivered"
-                        ? "DELIVERED"
-                        : "SENT"}
+                    {getSenderName(sender)}
                   </Text>
                 )}
-              </View>
-            </View>
-          );
-        }}
-      />
 
-      {/* Input bar */}
-      <View
-        style={{
-          backgroundColor: C.white,
-          borderTopWidth: 1,
-          borderTopColor: C.border,
-        }}
-      >
-        {editingId && (
-          <View
-            style={{
-              backgroundColor: C.bg,
-              paddingHorizontal: 16,
-              paddingVertical: 8,
-              flexDirection: "row",
-              justifyContent: "space-between",
-              alignItems: "center",
-              borderBottomWidth: 1,
-              borderBottomColor: C.border,
-            }}
-          >
-            <Text
-              style={[
-                mono,
-                {
-                  fontSize: 13,
-                  color: C.muted,
-                  letterSpacing: 0.2,
-                  textTransform: "uppercase",
-                },
-              ]}
-            >
-              EDITING MESSAGE
-            </Text>
-            <TouchableOpacity
-              onPress={() => {
-                setEditingId(null);
-                setInputText("");
-              }}
-            >
-              <Ionicons name="close-circle" size={16} color={C.muted} />
-            </TouchableOpacity>
-          </View>
-        )}
-
-        {selectedFile && (
-          <View
-            style={{
-              backgroundColor: "#EFF6FF",
-              paddingHorizontal: 16,
-              paddingVertical: 10,
-              flexDirection: "row",
-              alignItems: "center",
-              justifyContent: "space-between",
-              borderBottomWidth: 1,
-              borderBottomColor: "#DBEAFE",
-            }}
-          >
-            <View
-              style={{
-                flexDirection: "row",
-                alignItems: "center",
-                flex: 1,
-                paddingRight: 12,
-              }}
-            >
-              {selectedFile.isImage ? (
-                <Image
-                  source={{ uri: selectedFile.uri }}
+                <TouchableOpacity
+                  onLongPress={() =>
+                    isMe &&
+                    Alert.alert("Options", "Choose an action", [
+                      ...(item.text && !item.attachmentUrl
+                        ? [
+                            {
+                              text: "Edit",
+                              onPress: () => {
+                                setInputText(item.text);
+                                setEditingId(item.id);
+                                inputRef.current?.focus();
+                              },
+                            },
+                          ]
+                        : []),
+                      {
+                        text: "Delete",
+                        onPress: () => handleDelete(item.id),
+                        style: "destructive",
+                      },
+                      { text: "Cancel", style: "cancel" },
+                    ])
+                  }
+                  activeOpacity={0.85}
                   style={{
-                    width: 36,
-                    height: 36,
-                    borderRadius: 4,
+                    maxWidth: "82%",
+                    backgroundColor: isMe ? C.maroon : C.white,
                     borderWidth: 1,
-                    borderColor: C.border,
-                  }}
-                />
-              ) : (
-                <View
-                  style={{
-                    width: 36,
-                    height: 36,
+                    borderColor: isMe ? C.maroonMid : C.border,
                     borderRadius: 4,
-                    borderWidth: 1,
-                    borderColor: C.border,
-                    backgroundColor: C.white,
-                    alignItems: "center",
-                    justifyContent: "center",
+                    borderBottomRightRadius: isMe ? 0 : 4,
+                    borderBottomLeftRadius: isMe ? 4 : 0,
+                    paddingVertical: 10,
+                    paddingHorizontal: 14,
                   }}
                 >
-                  <Ionicons name="document-text" size={18} color="#2563eb" />
+                  {isImage && (
+                    <TouchableOpacity
+                      onPress={() => setViewingImage(item.attachmentUrl)}
+                      activeOpacity={0.9}
+                      style={{
+                        marginBottom: item.text ? 8 : 0,
+                        borderRadius: 2,
+                        overflow: "hidden",
+                      }}
+                    >
+                      <Image
+                        source={{ uri: item.attachmentUrl }}
+                        style={{ width: 200, height: 200 }}
+                        resizeMode="cover"
+                      />
+                    </TouchableOpacity>
+                  )}
+
+                  {isDoc && (
+                    <View
+                      style={{
+                        flexDirection: "row",
+                        alignItems: "center",
+                        backgroundColor: C.bg,
+                        padding: 10,
+                        borderRadius: 4,
+                        borderWidth: 1,
+                        borderColor: C.border,
+                        marginBottom: item.text ? 8 : 0,
+                        width: 220,
+                      }}
+                    >
+                      <TouchableOpacity
+                        style={{
+                          flex: 1,
+                          flexDirection: "row",
+                          alignItems: "center",
+                        }}
+                        onPress={() =>
+                          openDocumentInApp(
+                            item.attachmentUrl,
+                            item.attachmentName,
+                          )
+                        }
+                        activeOpacity={0.7}
+                      >
+                        <View
+                          style={{
+                            padding: 6,
+                            backgroundColor: "#EFF6FF",
+                            borderRadius: 4,
+                          }}
+                        >
+                          <Ionicons
+                            name="document-text"
+                            size={18}
+                            color="#2563eb"
+                          />
+                        </View>
+                        <View style={{ marginLeft: 10, flexShrink: 1 }}>
+                          <Text
+                            style={[
+                              font("700"),
+                              { fontSize: 14, color: C.text },
+                            ]}
+                            numberOfLines={1}
+                          >
+                            {item.attachmentName || "Document"}
+                          </Text>
+                          <Text
+                            style={[
+                              mono,
+                              {
+                                fontSize: 13,
+                                color: C.muted,
+                                marginTop: 2,
+                                textTransform: "uppercase",
+                                letterSpacing: 0.8,
+                              },
+                            ]}
+                          >
+                            TAP TO VIEW
+                          </Text>
+                        </View>
+                      </TouchableOpacity>
+                      <TouchableOpacity
+                        style={{
+                          padding: 6,
+                          marginLeft: 4,
+                          backgroundColor: C.border,
+                          borderRadius: 4,
+                        }}
+                        onPress={() => Linking.openURL(item.attachmentUrl)}
+                      >
+                        <Ionicons name="download" size={14} color={C.muted} />
+                      </TouchableOpacity>
+                    </View>
+                  )}
+
+                  {item.text ? (
+                    <Text
+                      style={[
+                        font("400"),
+                        {
+                          fontSize: 14,
+                          color: isMe ? C.white : C.text,
+                          lineHeight: 20,
+                        },
+                      ]}
+                    >
+                      {item.text}
+                    </Text>
+                  ) : null}
+                </TouchableOpacity>
+
+                <View
+                  style={{
+                    flexDirection: "row",
+                    alignItems: "center",
+                    marginTop: 4,
+                    paddingHorizontal: 2,
+                    gap: 6,
+                  }}
+                >
+                  <Text
+                    style={[
+                      mono,
+                      { fontSize: 13, color: C.muted, letterSpacing: 0.5 },
+                    ]}
+                  >
+                    {formatTime(item.timestamp)}
+                  </Text>
+                  {item.isEdited && (
+                    <Text
+                      style={[
+                        mono,
+                        {
+                          fontSize: 13,
+                          color: C.mutedLight,
+                          letterSpacing: 0.5,
+                        },
+                      ]}
+                    >
+                      (edited)
+                    </Text>
+                  )}
+                  {isMe && (
+                    <Text
+                      style={[
+                        mono,
+                        {
+                          fontSize: 13,
+                          letterSpacing: 0.8,
+                          textTransform: "uppercase",
+                          color: item.seen ? "#2471A3" : C.mutedLight,
+                        },
+                      ]}
+                    >
+                      ·{" "}
+                      {item.seen
+                        ? "SEEN"
+                        : item.status === "delivered"
+                          ? "DELIVERED"
+                          : "SENT"}
+                    </Text>
+                  )}
                 </View>
-              )}
+              </View>
+            );
+          }}
+        />
+
+        {/* ── INPUT BAR ─────────────────────────────────────────────────────── */}
+        <View
+          style={{
+            backgroundColor: C.white,
+            borderTopWidth: 1,
+            borderTopColor: C.border,
+          }}
+        >
+          {/* Editing banner */}
+          {editingId && (
+            <View
+              style={{
+                backgroundColor: C.bg,
+                paddingHorizontal: 16,
+                paddingVertical: 8,
+                flexDirection: "row",
+                justifyContent: "space-between",
+                alignItems: "center",
+                borderBottomWidth: 1,
+                borderBottomColor: C.border,
+              }}
+            >
               <Text
                 style={[
                   mono,
-                  { fontSize: 14, color: "#1e40af", marginLeft: 10, flex: 1 },
+                  {
+                    fontSize: 13,
+                    color: C.muted,
+                    letterSpacing: 0.2,
+                    textTransform: "uppercase",
+                  },
                 ]}
-                numberOfLines={1}
               >
-                {selectedFile.name || "Attachment ready"}
+                EDITING MESSAGE
               </Text>
+              <TouchableOpacity
+                onPress={() => {
+                  setEditingId(null);
+                  setInputText("");
+                }}
+              >
+                <Ionicons name="close-circle" size={16} color={C.muted} />
+              </TouchableOpacity>
             </View>
-            <TouchableOpacity
-              onPress={() => setSelectedFile(null)}
+          )}
+
+          {/* File preview banner */}
+          {selectedFile && (
+            <View
               style={{
-                padding: 6,
-                backgroundColor: C.white,
-                borderRadius: 4,
-                borderWidth: 1,
-                borderColor: C.border,
+                backgroundColor: "#EFF6FF",
+                paddingHorizontal: 16,
+                paddingVertical: 10,
+                flexDirection: "row",
+                alignItems: "center",
+                justifyContent: "space-between",
+                borderBottomWidth: 1,
+                borderBottomColor: "#DBEAFE",
               }}
             >
-              <Ionicons name="close" size={14} color="#ef4444" />
-            </TouchableOpacity>
-          </View>
-        )}
+              <View
+                style={{
+                  flexDirection: "row",
+                  alignItems: "center",
+                  flex: 1,
+                  paddingRight: 12,
+                }}
+              >
+                {selectedFile.isImage ? (
+                  <Image
+                    source={{ uri: selectedFile.uri }}
+                    style={{
+                      width: 36,
+                      height: 36,
+                      borderRadius: 4,
+                      borderWidth: 1,
+                      borderColor: C.border,
+                    }}
+                  />
+                ) : (
+                  <View
+                    style={{
+                      width: 36,
+                      height: 36,
+                      borderRadius: 4,
+                      borderWidth: 1,
+                      borderColor: C.border,
+                      backgroundColor: C.white,
+                      alignItems: "center",
+                      justifyContent: "center",
+                    }}
+                  >
+                    <Ionicons name="document-text" size={18} color="#2563eb" />
+                  </View>
+                )}
+                <Text
+                  style={[
+                    mono,
+                    { fontSize: 14, color: "#1e40af", marginLeft: 10, flex: 1 },
+                  ]}
+                  numberOfLines={1}
+                >
+                  {selectedFile.name || "Attachment ready"}
+                </Text>
+              </View>
+              <TouchableOpacity
+                onPress={() => setSelectedFile(null)}
+                style={{
+                  padding: 6,
+                  backgroundColor: C.white,
+                  borderRadius: 4,
+                  borderWidth: 1,
+                  borderColor: C.border,
+                }}
+              >
+                <Ionicons name="close" size={14} color="#ef4444" />
+              </TouchableOpacity>
+            </View>
+          )}
 
-        <View
-          style={{
-            paddingHorizontal: 14,
-            paddingTop: 10,
-            paddingBottom: 10,
-            flexDirection: "row",
-            alignItems: "center",
-          }}
-        >
-          <TouchableOpacity
-            onPress={handlePickDocument}
+          {/* Text input row */}
+          <View
             style={{
-              width: 38,
-              height: 38,
-              borderRadius: 4,
-              borderWidth: 1,
-              borderColor: C.border,
-              backgroundColor: C.bg,
+              paddingHorizontal: 14,
+              paddingTop: 10,
+              paddingBottom: 10,
+              flexDirection: "row",
               alignItems: "center",
-              justifyContent: "center",
-              marginRight: 8,
             }}
           >
-            <Ionicons
-              name="document-attach"
-              size={18}
-              color={
-                selectedFile && !selectedFile.isImage ? "#2563eb" : C.muted
-              }
-            />
-          </TouchableOpacity>
-
-          <TouchableOpacity
-            onPress={handlePickImage}
-            style={{
-              width: 38,
-              height: 38,
-              borderRadius: 4,
-              borderWidth: 1,
-              borderColor: C.border,
-              backgroundColor: C.bg,
-              alignItems: "center",
-              justifyContent: "center",
-              marginRight: 10,
-            }}
-          >
-            <Ionicons
-              name="image"
-              size={18}
-              color={selectedFile && selectedFile.isImage ? "#2563eb" : C.muted}
-            />
-          </TouchableOpacity>
-
-          <TextInput
-            ref={inputRef}
-            style={[
-              font("400"),
-              {
-                flex: 1,
-                backgroundColor: C.bg,
+            <TouchableOpacity
+              onPress={handlePickDocument}
+              style={{
+                width: 38,
+                height: 38,
+                borderRadius: 4,
                 borderWidth: 1,
                 borderColor: C.border,
-                borderRadius: 4,
-                paddingHorizontal: 14,
-                paddingVertical: 10,
-                fontSize: 14,
-                maxHeight: 100,
-                color: C.text,
-              },
-            ]}
-            placeholder={`Message ${liveTarget?.fullName?.split(" ")[0] || "user"}...`}
-            placeholderTextColor={C.muted}
-            value={inputText}
-            onChangeText={setInputText}
-            multiline
-          />
-
-          <TouchableOpacity
-            onPress={handleSend}
-            disabled={uploading || (inputText.trim() === "" && !selectedFile)}
-            style={{
-              marginLeft: 10,
-              width: 44,
-              height: 44,
-              borderRadius: 4,
-              backgroundColor: editingId ? "#2563eb" : C.maroon,
-              alignItems: "center",
-              justifyContent: "center",
-              opacity:
-                uploading || (inputText.trim() === "" && !selectedFile)
-                  ? 0.4
-                  : 1,
-            }}
-          >
-            {uploading ? (
-              <ActivityIndicator size="small" color="white" />
-            ) : (
+                backgroundColor: C.bg,
+                alignItems: "center",
+                justifyContent: "center",
+                marginRight: 8,
+              }}
+            >
               <Ionicons
-                name={editingId ? "checkmark" : "send"}
+                name="document-attach"
                 size={18}
-                color="white"
+                color={
+                  selectedFile && !selectedFile.isImage ? "#2563eb" : C.muted
+                }
               />
-            )}
-          </TouchableOpacity>
+            </TouchableOpacity>
+
+            <TouchableOpacity
+              onPress={handlePickImage}
+              style={{
+                width: 38,
+                height: 38,
+                borderRadius: 4,
+                borderWidth: 1,
+                borderColor: C.border,
+                backgroundColor: C.bg,
+                alignItems: "center",
+                justifyContent: "center",
+                marginRight: 10,
+              }}
+            >
+              <Ionicons
+                name="image"
+                size={18}
+                color={
+                  selectedFile && selectedFile.isImage ? "#2563eb" : C.muted
+                }
+              />
+            </TouchableOpacity>
+
+            <TextInput
+              ref={inputRef}
+              style={[
+                font("400"),
+                {
+                  flex: 1,
+                  backgroundColor: C.bg,
+                  borderWidth: 1,
+                  borderColor: C.border,
+                  borderRadius: 4,
+                  paddingHorizontal: 14,
+                  paddingVertical: 10,
+                  fontSize: 14,
+                  maxHeight: 100,
+                  color: C.text,
+                },
+              ]}
+              placeholder={`Message ${liveTarget?.fullName?.split(" ")[0] || "user"}...`}
+              placeholderTextColor={C.muted}
+              value={inputText}
+              onChangeText={setInputText}
+              multiline
+            />
+
+            <TouchableOpacity
+              onPress={handleSend}
+              disabled={uploading || (inputText.trim() === "" && !selectedFile)}
+              style={{
+                marginLeft: 10,
+                width: 44,
+                height: 44,
+                borderRadius: 4,
+                backgroundColor: editingId ? "#2563eb" : C.maroon,
+                alignItems: "center",
+                justifyContent: "center",
+                opacity:
+                  uploading || (inputText.trim() === "" && !selectedFile)
+                    ? 0.4
+                    : 1,
+              }}
+            >
+              {uploading ? (
+                <ActivityIndicator size="small" color="white" />
+              ) : (
+                <Ionicons
+                  name={editingId ? "checkmark" : "send"}
+                  size={18}
+                  color="white"
+                />
+              )}
+            </TouchableOpacity>
+          </View>
         </View>
       </View>
 
+      {/* FIXED SPACER BLOCK */}
       <View
         style={{
-          height: keyboardHeight > 0 ? keyboardHeight + 35 : TAB_BAR_HEIGHT,
+          height: keyboardHeight > 0 ? keyboardHeight + 35 : (Platform.OS === "ios" ? 90 : 70),
         }}
       />
     </SafeAreaView>

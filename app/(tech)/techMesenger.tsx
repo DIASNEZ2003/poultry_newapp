@@ -2,40 +2,43 @@ import { Ionicons } from "@expo/vector-icons";
 import { useIsFocused } from "@react-navigation/native";
 import * as DocumentPicker from "expo-document-picker";
 import * as ImagePicker from "expo-image-picker";
-import * as Notifications from "expo-notifications"; // <-- ADDED EXPO NOTIFICATIONS
+import * as Notifications from "expo-notifications";
 import {
-  child,
-  get,
-  onDisconnect,
-  onValue,
-  push,
-  ref,
-  remove,
-  set,
-  update,
+    child,
+    get,
+    onDisconnect,
+    onValue,
+    push,
+    ref,
+    remove,
+    set,
+    update,
 } from "firebase/database";
 import { useEffect, useMemo, useRef, useState } from "react";
 import {
-  ActivityIndicator,
-  Alert,
-  Dimensions,
-  FlatList,
-  Image,
-  Keyboard,
-  Linking,
-  Modal,
-  Platform,
-  SafeAreaView,
-  Text,
-  TextInput,
-  TouchableOpacity,
-  View,
+    ActivityIndicator,
+    Alert,
+    Dimensions,
+    FlatList,
+    Image,
+    Keyboard,
+    Linking,
+    Modal,
+    Platform,
+    SafeAreaView,
+    Text,
+    TextInput,
+    TouchableOpacity,
+    View,
 } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { WebView } from "react-native-webview";
 import { supabase } from "../../supabaseClient";
 import { auth, db } from "../firebaseConfig";
-import { sendPushNotification } from "../pushNotifications";
+import {
+    registerForPushNotificationsAsync,
+    sendPushNotification,
+} from "../pushNotifications";
 
 const { height: SCREEN_HEIGHT } = Dimensions.get("window");
 
@@ -157,7 +160,17 @@ const TechMessenger = () => {
   const flatListRef = useRef<any>(null);
   const isFocused = useIsFocused();
   const inputRef = useRef<any>(null);
-  const TAB_BAR_HEIGHT = 88;
+
+  // ── Push Notification Token Registration ────────
+  useEffect(() => {
+    const cu = auth.currentUser;
+    if (!cu) return;
+    registerForPushNotificationsAsync().then((token) => {
+      if (token) {
+        update(ref(db, `users/${cu.uid}`), { pushToken: token });
+      }
+    });
+  }, []);
 
   // ── Keyboard ──────────────────────────────────────────────────────────────
   useEffect(() => {
@@ -221,7 +234,6 @@ const TechMessenger = () => {
               data[uid].role === "admin" ||
               uid === "KLQoW8g03nT22j2vCd9NELRXq0r1";
 
-            // FIXED: Ensure the role is converted to lowercase to avoid filtering issues due to casing
             const rawRole = data[uid].role
               ? String(data[uid].role).toLowerCase()
               : "personnel";
@@ -303,7 +315,6 @@ const TechMessenger = () => {
   const [prevUnreadTotal, setPrevUnreadTotal] = useState(0);
 
   const currentUnreadTotal = useMemo(() => {
-    // Sum up all unread messages across all chats
     return Object.values(unreadCounts).reduce(
       (sum: number, count: any) => sum + count,
       0,
@@ -311,7 +322,6 @@ const TechMessenger = () => {
   }, [unreadCounts]);
 
   useEffect(() => {
-    // If the total unread count INCREASES, trigger a local notification
     if (currentUnreadTotal > prevUnreadTotal) {
       Notifications.scheduleNotificationAsync({
         content: {
@@ -319,7 +329,7 @@ const TechMessenger = () => {
           body: `You have ${currentUnreadTotal} unread message(s) in your inbox.`,
           sound: true,
         },
-        trigger: null, // Send immediately
+        trigger: null,
       });
     }
     setPrevUnreadTotal(currentUnreadTotal);
@@ -349,7 +359,14 @@ const TechMessenger = () => {
           ...data[id],
           sender: data[id].sender || data[id].senderUid || "unknown",
         }));
-        setMessages(msgs.sort((a, b) => a.id.localeCompare(b.id)));
+        setMessages(
+          msgs.sort((a, b) => {
+            if (a.timestamp && b.timestamp && a.timestamp !== b.timestamp) {
+              return a.timestamp - b.timestamp;
+            }
+            return a.id.localeCompare(b.id);
+          }),
+        );
         const updates: any = {};
         Object.keys(data).forEach((id) => {
           const m = data[id];
@@ -360,7 +377,13 @@ const TechMessenger = () => {
           }
         });
         if (Object.keys(updates).length) update(ref(db), updates);
-      } else setMessages([]);
+        setTimeout(
+          () => flatListRef.current?.scrollToEnd({ animated: true }),
+          100,
+        );
+      } else {
+        setMessages([]);
+      }
     });
     return () => {
       unsubChat();
@@ -461,7 +484,6 @@ const TechMessenger = () => {
         }
         await push(ref(db, `chats/${chatId}`), payload);
 
-        // --- NEW PUSH NOTIFICATION CODE ---
         if (!editingId) {
           const targetUserRef = child(
             ref(db),
@@ -483,7 +505,6 @@ const TechMessenger = () => {
             }
           });
         }
-        // ----------------------------------
       }
     } catch {
       Alert.alert("Error", "Failed to send message. Check your connection.");
@@ -545,7 +566,6 @@ const TechMessenger = () => {
             isAlert: true,
           });
 
-          // --- NEW PUSH NOTIFICATION CODE ---
           const targetUserRef = child(ref(db), `users/${p.uid}/pushToken`);
           get(targetUserRef).then((snapshot) => {
             if (snapshot.exists()) {
@@ -557,7 +577,6 @@ const TechMessenger = () => {
               );
             }
           });
-          // ----------------------------------
         }),
       );
       setBroadcastSent(true);
@@ -779,6 +798,10 @@ const TechMessenger = () => {
           <FlatList
             data={filteredUsers}
             keyExtractor={(i) => i.uid}
+            initialNumToRender={15}
+            maxToRenderPerBatch={10}
+            windowSize={10}
+            removeClippedSubviews={Platform.OS === "android"}
             contentContainerStyle={{ padding: 16, paddingBottom: 100 }}
             renderItem={({ item }) => {
               const unread = unreadCounts[item.uid] || 0;
@@ -1492,16 +1515,28 @@ const TechMessenger = () => {
         ref={flatListRef}
         data={messages}
         keyExtractor={(i) => i.id}
+        initialNumToRender={20}
+        maxToRenderPerBatch={10}
+        windowSize={10}
+        removeClippedSubviews={Platform.OS === "android"}
         style={{ backgroundColor: C.bg }}
         contentContainerStyle={{ padding: 16, paddingBottom: 20 }}
-        onContentSizeChange={() =>
-          messages.length > 0 &&
-          flatListRef.current?.scrollToEnd({ animated: true })
-        }
-        onLayout={() =>
-          messages.length > 0 &&
-          flatListRef.current?.scrollToEnd({ animated: false })
-        }
+        onContentSizeChange={() => {
+          if (messages.length > 0) {
+            setTimeout(
+              () => flatListRef.current?.scrollToEnd({ animated: true }),
+              50,
+            );
+          }
+        }}
+        onLayout={() => {
+          if (messages.length > 0) {
+            setTimeout(
+              () => flatListRef.current?.scrollToEnd({ animated: false }),
+              50,
+            );
+          }
+        }}
         renderItem={({ item }) => {
           const cu = auth.currentUser;
           const sender = item.sender || item.senderUid;
@@ -1964,9 +1999,11 @@ const TechMessenger = () => {
         </View>
       </View>
 
+      {/* FIXED SPACER BLOCK */}
       <View
         style={{
-          height: keyboardHeight > 0 ? keyboardHeight + 35 : TAB_BAR_HEIGHT,
+          // ADDED + 35 so the input gets pushed up higher when the keyboard is active
+          height: keyboardHeight > 0 ? keyboardHeight + 35 : 0,
         }}
       />
     </SafeAreaView>

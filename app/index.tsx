@@ -203,16 +203,9 @@ export default function Login() {
               </TouchableOpacity>
             </View>
 
-            {/* FORGOT PASSWORD LINK */}
-            <TouchableOpacity className="self-end mb-8">
-              <Text className="text-red-200 text-xs font-bold">
-                Forgot Password?
-              </Text>
-            </TouchableOpacity>
-
             {/* LOGIN BUTTON */}
             <TouchableOpacity
-              className="w-full bg-white py-4 rounded-xl items-center shadow-lg active:bg-gray-100"
+              className="w-full bg-white py-4 mt-5 rounded-xl items-center shadow-lg active:bg-gray-100"
               onPress={handleLogin}
               disabled={loading}
             >
